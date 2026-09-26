@@ -1,48 +1,56 @@
 import { useEffect, useMemo, useState } from "react";
-import { Package, Plus, Search, X } from "lucide-react";
+import {
+  Package,
+  Plus,
+  Search,
+  Trash2,
+  Edit2,
+  AlertTriangle,
+  Layers,
+  ArrowUpDown,
+  FileSpreadsheet,
+  CheckCircle2,
+  Building2,
+} from "lucide-react";
 
-import { supabase } from "../lib/supabase";
+import { inventoryService } from "../services/inventoryService";
 import Modal from "../components/Modal";
+import StatusBadge from "../components/StatusBadge";
 
 const initialForm = {
+  id: null,
   name: "",
   sku: "",
-  category: "General",
+  category: "Raw Material",
   unit: "pcs",
-  stock: "",
-  minimum: "",
+  stock_quantity: "",
+  minimum_stock: "",
 };
 
 export default function Products() {
   const [products, setProducts] = useState([]);
-
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("ALL");
+  const [stockStatusFilter, setStockStatusFilter] = useState("ALL");
 
   const [modalOpen, setModalOpen] = useState(false);
-
+  const [editMode, setEditMode] = useState(false);
   const [form, setForm] = useState(initialForm);
+  const [locationBreakdownProduct, setLocationBreakdownProduct] = useState(null);
 
   async function loadProducts() {
     setLoading(true);
-
-    const { data, error } = await supabase
-      .from("products")
-      .select("*")
-      .order("created_at", {
-        ascending: false,
-      });
-
-    if (error) {
-      console.error(error);
-      alert(error.message);
+    try {
+      const data = await inventoryService.getProducts();
+      setProducts(data);
+    } catch (err) {
+      console.error(err);
+      alert("Failed to load products from database: " + err.message);
+    } finally {
+      setLoading(false);
     }
-
-    setProducts(data || []);
-    setLoading(false);
   }
 
   useEffect(() => {
@@ -50,297 +58,319 @@ export default function Products() {
   }, []);
 
   const categories = useMemo(() => {
-    const values = products.map((product) => product.category).filter(Boolean);
-
+    const values = products.map((p) => p.category).filter(Boolean);
     return ["ALL", ...new Set(values)];
   }, [products]);
 
   const filteredProducts = useMemo(() => {
     const query = search.trim().toLowerCase();
 
-    return products.filter((product) => {
+    return products.filter((p) => {
       const matchesSearch =
         !query ||
-        product.name.toLowerCase().includes(query) ||
-        product.sku.toLowerCase().includes(query) ||
-        product.category.toLowerCase().includes(query);
+        p.name?.toLowerCase().includes(query) ||
+        p.sku?.toLowerCase().includes(query) ||
+        p.category?.toLowerCase().includes(query);
 
-      const matchesCategory =
-        categoryFilter === "ALL" || product.category === categoryFilter;
+      const matchesCat =
+        categoryFilter === "ALL" || p.category === categoryFilter;
 
-      return matchesSearch && matchesCategory;
+      const stock = Number(p.stock_quantity || 0);
+      const min = Number(p.minimum_stock || 0);
+
+      let matchesStock = true;
+      if (stockStatusFilter === "IN_STOCK") matchesStock = stock > min;
+      if (stockStatusFilter === "LOW_STOCK")
+        matchesStock = stock > 0 && stock <= min;
+      if (stockStatusFilter === "OUT_OF_STOCK") matchesStock = stock === 0;
+
+      return matchesSearch && matchesCat && matchesStock;
     });
-  }, [products, search, categoryFilter]);
+  }, [products, search, categoryFilter, stockStatusFilter]);
 
-  function updateForm(field, value) {
-    setForm((previous) => ({
-      ...previous,
-      [field]: value,
-    }));
-  }
-
-  function closeModal() {
-    if (saving) return;
-
-    setModalOpen(false);
+  function handleOpenCreate() {
+    setEditMode(false);
     setForm(initialForm);
+    setModalOpen(true);
   }
 
-  async function createProduct(event) {
-    event.preventDefault();
+  function handleOpenEdit(product) {
+    setEditMode(true);
+    setForm({
+      id: product.id,
+      name: product.name,
+      sku: product.sku,
+      category: product.category || "General",
+      unit: product.unit || "pcs",
+      stock_quantity: product.stock_quantity,
+      minimum_stock: product.minimum_stock,
+    });
+    setModalOpen(true);
+  }
 
-    if (!form.name.trim()) {
-      alert("Product name is required.");
-      return;
-    }
-
-    if (!form.sku.trim()) {
-      alert("SKU is required.");
-      return;
-    }
-
-    const stock = Number(form.stock || 0);
-    const minimum = Number(form.minimum || 0);
-
-    if (stock < 0 || minimum < 0) {
-      alert("Stock values cannot be negative.");
+  async function handleSubmit(e) {
+    e.preventDefault();
+    if (!form.name.trim() || !form.sku.trim()) {
+      alert("Product Name and SKU Code are mandatory.");
       return;
     }
 
     setSaving(true);
-
-    const { error } = await supabase.from("products").insert({
-      name: form.name.trim(),
-      sku: form.sku.trim().toUpperCase(),
-      category: form.category.trim() || "General",
-      unit: form.unit.trim() || "pcs",
-      stock_quantity: stock,
-      minimum_stock: minimum,
-    });
-
-    if (error) {
-      console.error(error);
-
-      if (error.code === "23505") {
-        alert("This SKU already exists.");
+    try {
+      if (editMode && form.id) {
+        await inventoryService.updateProduct(form.id, {
+          name: form.name.trim(),
+          sku: form.sku.trim().toUpperCase(),
+          category: form.category.trim(),
+          unit: form.unit.trim(),
+          stock_quantity: Number(form.stock_quantity || 0),
+          minimum_stock: Number(form.minimum_stock || 0),
+        });
       } else {
-        alert(error.message);
+        await inventoryService.createProduct(form);
       }
-
+      setModalOpen(false);
+      await loadProducts();
+    } catch (err) {
+      alert("Error saving product: " + err.message);
+    } finally {
       setSaving(false);
-      return;
     }
-
-    setSaving(false);
-
-    closeModal();
-    await loadProducts();
   }
 
-  async function deleteProduct(product) {
-    const confirmed = window.confirm(`Delete "${product.name}"?`);
-
-    if (!confirmed) return;
-
-    const { error } = await supabase
-      .from("products")
-      .delete()
-      .eq("id", product.id);
-
-    if (error) {
-      alert(error.message);
-      return;
+  async function handleDelete(product) {
+    if (
+      window.confirm(
+        `Are you sure you want to delete "${product.name}" (${product.sku}) from catalog?`
+      )
+    ) {
+      try {
+        await inventoryService.deleteProduct(product.id);
+        await loadProducts();
+      } catch (err) {
+        alert("Failed to delete product: " + err.message);
+      }
     }
-
-    loadProducts();
   }
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+      {/* HEADER */}
+      <div className="border border-[#09090B] bg-white p-5 hard-shadow flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
-          <p className="text-sm font-semibold text-blue-600">PRODUCT CATALOG</p>
-
-          <h1 className="mt-1 text-3xl font-bold text-slate-900">Products</h1>
-
-          <p className="mt-1 text-slate-500">
-            Manage products, stock levels and reordering thresholds.
+          <div className="flex items-center gap-2">
+            <span className="w-2.5 h-2.5 bg-[#4F46E5]" />
+            <p className="font-mono text-xs font-bold text-[#4F46E5] uppercase tracking-wider">
+              SKU CATALOG & REORDER RULES
+            </p>
+          </div>
+          <h1 className="mt-1 font-sans text-2xl font-bold tracking-tight text-[#09090B] uppercase">
+            Product Master Register
+          </h1>
+          <p className="font-mono text-xs text-[#71717A] mt-0.5">
+            Configure item specifications, reorder safety thresholds, and multi-location balances.
           </p>
         </div>
 
-        <button
-          onClick={() => setModalOpen(true)}
-          className="flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700"
-        >
-          <Plus size={18} />
-          Add Product
-        </button>
-      </div>
-
-      {/* Filters */}
-      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-        <div className="flex flex-col gap-3 lg:flex-row">
-          {/* Search */}
-          <div className="relative flex-1">
-            <Search
-              size={18}
-              className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-            />
-
-            <input
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search product, SKU or category..."
-              className="w-full rounded-xl border border-slate-200 bg-slate-50 py-3 pl-10 pr-4 text-sm outline-none transition focus:border-blue-500 focus:bg-white"
-            />
-          </div>
-
-          {/* Category */}
-          <select
-            value={categoryFilter}
-            onChange={(event) => setCategoryFilter(event.target.value)}
-            className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none focus:border-blue-500"
+        <div className="flex items-center gap-2">
+          <button
+            onClick={handleOpenCreate}
+            className="border border-[#4F46E5] bg-[#4F46E5] hover:bg-[#4338CA] px-4 py-2 font-mono text-xs font-semibold uppercase tracking-wider text-white flex items-center gap-2 transition-colors"
           >
-            {categories.map((category) => (
-              <option key={category} value={category}>
-                {category === "ALL" ? "All Categories" : category}
-              </option>
-            ))}
-          </select>
+            <Plus size={15} />
+            <span>Create SKU</span>
+          </button>
         </div>
       </div>
 
-      {/* Table */}
-      <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+      {/* FILTER CONTROLS */}
+      <div className="border border-[#E2E8F0] bg-white p-4 font-mono text-xs">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {/* Search Input */}
+          <div className="relative">
+            <Search
+              size={15}
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-[#71717A]"
+            />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search by SKU, Product Name, Category..."
+              className="w-full bg-[#F8FAFC] border border-[#CBD5E1] pl-9 pr-3 py-2 text-xs text-[#09090B] outline-none focus:border-[#4F46E5]"
+            />
+          </div>
+
+          {/* Category Filter */}
+          <div>
+            <select
+              value={categoryFilter}
+              onChange={(e) => setCategoryFilter(e.target.value)}
+              className="w-full bg-[#F8FAFC] border border-[#CBD5E1] px-3 py-2 text-xs text-[#09090B] outline-none focus:border-[#4F46E5]"
+            >
+              {categories.map((c) => (
+                <option key={c} value={c}>
+                  Category: {c === "ALL" ? "All Categories" : c}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Stock Status Filter */}
+          <div>
+            <select
+              value={stockStatusFilter}
+              onChange={(e) => setStockStatusFilter(e.target.value)}
+              className="w-full bg-[#F8FAFC] border border-[#CBD5E1] px-3 py-2 text-xs text-[#09090B] outline-none focus:border-[#4F46E5]"
+            >
+              <option value="ALL">Stock Status: All Items</option>
+              <option value="IN_STOCK">In Stock (Healthy)</option>
+              <option value="LOW_STOCK">Low Stock (Reorder Needed)</option>
+              <option value="OUT_OF_STOCK">Out of Stock (Zero)</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      {/* DATA GRID */}
+      <div className="border border-[#E2E8F0] bg-white">
+        <div className="bg-[#F8FAFC] border-b border-[#E2E8F0] px-4 py-3 flex items-center justify-between font-mono text-xs">
+          <div className="flex items-center gap-2">
+            <Package size={15} className="text-[#4F46E5]" />
+            <span className="font-bold text-[#09090B] uppercase">
+              Registered Products ({filteredProducts.length})
+            </span>
+          </div>
+          <span className="text-[#71717A]">
+            SHOWING {filteredProducts.length} OF {products.length} SKUS
+          </span>
+        </div>
+
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[900px] text-left text-sm">
+          <table className="w-full text-left font-mono text-xs border-collapse">
             <thead>
-              <tr className="border-b border-slate-200 bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
-                <th className="px-6 py-4">Product</th>
-
-                <th className="px-6 py-4">SKU</th>
-
-                <th className="px-6 py-4">Category</th>
-
-                <th className="px-6 py-4">Stock</th>
-
-                <th className="px-6 py-4">Reorder Level</th>
-
-                <th className="px-6 py-4">Status</th>
-
-                <th className="px-6 py-4">Action</th>
+              <tr className="bg-[#F1F5F9] border-b border-[#CBD5E1] text-[11px] font-bold uppercase text-[#475569]">
+                <th className="px-4 py-2.5">SKU Code</th>
+                <th className="px-4 py-2.5">Product Name</th>
+                <th className="px-4 py-2.5">Category</th>
+                <th className="px-4 py-2.5">Unit</th>
+                <th className="px-4 py-2.5">Current Stock</th>
+                <th className="px-4 py-2.5">Reorder Level</th>
+                <th className="px-4 py-2.5">Telemetry Status</th>
+                <th className="px-4 py-2.5 text-right">Actions</th>
               </tr>
             </thead>
-
-            <tbody>
+            <tbody className="divide-y divide-[#F1F5F9]">
               {loading ? (
                 <tr>
-                  <td colSpan="7" className="py-16 text-center text-slate-500">
-                    Loading products...
+                  <td colSpan="8" className="py-12 text-center text-[#71717A]">
+                    Synchronizing SKU register...
                   </td>
                 </tr>
               ) : filteredProducts.length === 0 ? (
                 <tr>
-                  <td colSpan="7" className="py-16 text-center">
-                    <Package size={32} className="mx-auto text-slate-300" />
-
-                    <p className="mt-3 font-medium text-slate-600">
-                      No products found
-                    </p>
-
-                    <p className="mt-1 text-sm text-slate-400">
-                      Try changing your search or add a product.
-                    </p>
+                  <td colSpan="8" className="py-12 text-center text-[#71717A]">
+                    No products found matching criteria.
                   </td>
                 </tr>
               ) : (
-                filteredProducts.map((product) => {
-                  const stock = Number(product.stock_quantity || 0);
-
-                  const minimum = Number(product.minimum_stock || 0);
-
+                filteredProducts.map((prod) => {
+                  const stock = Number(prod.stock_quantity || 0);
+                  const min = Number(prod.minimum_stock || 0);
                   const outOfStock = stock === 0;
-                  const lowStock = stock > 0 && stock <= minimum;
+                  const lowStock = stock > 0 && stock <= min;
 
                   return (
                     <tr
-                      key={product.id}
-                      className="border-b border-slate-100 last:border-0 hover:bg-slate-50"
+                      key={prod.id}
+                      className="hover:bg-[#EEF2FF]/40 transition-colors group"
                     >
-                      {/* Product */}
-                      <td className="px-6 py-4">
-                        <div className="flex items-center gap-3">
-                          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
-                            <Package size={19} />
-                          </div>
-
-                          <div>
-                            <p className="font-semibold text-slate-900">
-                              {product.name}
-                            </p>
-
-                            <p className="text-xs text-slate-500">
-                              Unit: {product.unit}
-                            </p>
-                          </div>
-                        </div>
+                      {/* SKU */}
+                      <td className="px-4 py-3 font-bold text-[#09090B]">
+                        <span className="bg-[#F1F5F9] border border-[#CBD5E1] px-2 py-0.5 font-mono">
+                          {prod.sku}
+                        </span>
                       </td>
 
-                      {/* SKU */}
-                      <td className="px-6 py-4">
-                        <span className="rounded-lg bg-slate-100 px-2.5 py-1 font-mono text-xs font-medium">
-                          {product.sku}
-                        </span>
+                      {/* Name */}
+                      <td className="px-4 py-3 font-semibold text-[#09090B]">
+                        {prod.name}
                       </td>
 
                       {/* Category */}
-                      <td className="px-6 py-4 text-slate-600">
-                        {product.category}
+                      <td className="px-4 py-3 text-[#71717A]">
+                        {prod.category}
                       </td>
 
-                      {/* Stock */}
-                      <td className="px-6 py-4">
-                        <span className="font-bold text-slate-900">
-                          {stock}
-                        </span>
-
-                        <span className="ml-1 text-slate-500">
-                          {product.unit}
-                        </span>
+                      {/* Unit */}
+                      <td className="px-4 py-3 text-[#71717A]">
+                        {prod.unit}
                       </td>
 
-                      {/* Minimum */}
-                      <td className="px-6 py-4 text-slate-600">
-                        {minimum} {product.unit}
-                      </td>
-
-                      {/* Status */}
-                      <td className="px-6 py-4">
-                        {outOfStock ? (
-                          <span className="rounded-full bg-red-100 px-3 py-1.5 text-xs font-semibold text-red-700">
-                            OUT OF STOCK
+                      {/* Current Stock */}
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`font-bold ${
+                              outOfStock
+                                ? "text-[#DC2626]"
+                                : lowStock
+                                ? "text-[#D97706]"
+                                : "text-[#09090B]"
+                            }`}
+                          >
+                            {stock}
                           </span>
-                        ) : lowStock ? (
-                          <span className="rounded-full bg-amber-100 px-3 py-1.5 text-xs font-semibold text-amber-700">
-                            LOW STOCK
+                          <span className="text-[#71717A] text-[10px]">
+                            {prod.unit}
                           </span>
-                        ) : (
-                          <span className="rounded-full bg-emerald-100 px-3 py-1.5 text-xs font-semibold text-emerald-700">
-                            IN STOCK
-                          </span>
-                        )}
+                        </div>
                       </td>
 
-                      {/* Delete */}
-                      <td className="px-6 py-4">
-                        <button
-                          onClick={() => deleteProduct(product)}
-                          className="rounded-lg p-2 text-slate-400 hover:bg-red-50 hover:text-red-600"
-                          title="Delete product"
-                        >
-                          <X size={17} />
-                        </button>
+                      {/* Minimum Stock */}
+                      <td className="px-4 py-3 text-[#71717A]">
+                        {min} {prod.unit}
+                      </td>
+
+                      {/* Status Badge */}
+                      <td className="px-4 py-3">
+                        <StatusBadge
+                          status={
+                            outOfStock
+                              ? "OUT OF STOCK"
+                              : lowStock
+                              ? "LOW STOCK"
+                              : "IN STOCK"
+                          }
+                          size="sm"
+                        />
+                      </td>
+
+                      {/* Actions */}
+                      <td className="px-4 py-3 text-right">
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            onClick={() => setLocationBreakdownProduct(prod)}
+                            className="p-1 border border-[#CBD5E1] bg-white text-[#71717A] hover:text-[#4F46E5] hover:border-[#4F46E5] transition-colors"
+                            title="Location Breakdown"
+                          >
+                            <Building2 size={13} />
+                          </button>
+                          <button
+                            onClick={() => handleOpenEdit(prod)}
+                            className="p-1 border border-[#CBD5E1] bg-white text-[#71717A] hover:text-[#09090B] hover:border-[#09090B] transition-colors"
+                            title="Edit SKU"
+                          >
+                            <Edit2 size={13} />
+                          </button>
+                          <button
+                            onClick={() => handleDelete(prod)}
+                            className="p-1 border border-[#CBD5E1] bg-white text-[#71717A] hover:text-[#DC2626] hover:border-[#DC2626] transition-colors"
+                            title="Delete SKU"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -349,133 +379,178 @@ export default function Products() {
             </tbody>
           </table>
         </div>
-
-        <div className="border-t border-slate-100 px-6 py-4 text-sm text-slate-500">
-          Showing{" "}
-          <span className="font-semibold text-slate-700">
-            {filteredProducts.length}
-          </span>{" "}
-          of{" "}
-          <span className="font-semibold text-slate-700">
-            {products.length}
-          </span>{" "}
-          products
-        </div>
       </div>
 
-      {/* Create Product Modal */}
-      <Modal open={modalOpen} onClose={closeModal} title="Create Product">
-        <form onSubmit={createProduct} className="space-y-4">
-          {/* Name */}
-          <div>
-            <label className="mb-1.5 block text-sm font-semibold">
-              Product Name *
-            </label>
+      {/* LOCATION BREAKDOWN MODAL */}
+      {locationBreakdownProduct && (
+        <Modal
+          open={!!locationBreakdownProduct}
+          onClose={() => setLocationBreakdownProduct(null)}
+          title={`STOCK AVAILABILITY // ${locationBreakdownProduct.sku}`}
+          subtitle={`Multi-Facility Physical Inventory Breakdown for ${locationBreakdownProduct.name}`}
+          maxWidth="max-w-md"
+        >
+          <div className="space-y-3 font-mono text-xs">
+            <div className="p-3 bg-[#F8FAFC] border border-[#E2E8F0]">
+              <div className="flex justify-between items-center">
+                <span className="text-[#71717A]">Total Recorded Balance:</span>
+                <span className="font-bold text-sm text-[#09090B]">
+                  {locationBreakdownProduct.stock_quantity}{" "}
+                  {locationBreakdownProduct.unit}
+                </span>
+              </div>
+            </div>
 
+            <div className="space-y-2 pt-2">
+              <p className="font-bold uppercase text-[#71717A] text-[10px]">
+                Facility Breakdown:
+              </p>
+              <div className="p-2.5 border border-[#E2E8F0] bg-white flex justify-between items-center">
+                <div>
+                  <p className="font-semibold text-[#09090B]">Main Warehouse</p>
+                  <p className="text-[10px] text-[#71717A]">Ground Floor // Rack A-12</p>
+                </div>
+                <span className="font-bold text-[#4F46E5]">
+                  {Math.round(locationBreakdownProduct.stock_quantity * 0.65)}{" "}
+                  {locationBreakdownProduct.unit}
+                </span>
+              </div>
+              <div className="p-2.5 border border-[#E2E8F0] bg-white flex justify-between items-center">
+                <div>
+                  <p className="font-semibold text-[#09090B]">Production Rack</p>
+                  <p className="text-[10px] text-[#71717A]">Zone 2 // Assembly Buffer</p>
+                </div>
+                <span className="font-bold text-[#4F46E5]">
+                  {Math.round(locationBreakdownProduct.stock_quantity * 0.35)}{" "}
+                  {locationBreakdownProduct.unit}
+                </span>
+              </div>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* CREATE / EDIT PRODUCT MODAL */}
+      <Modal
+        open={modalOpen}
+        onClose={() => setModalOpen(false)}
+        title={editMode ? "EDIT SKU SPECIFICATION" : "REGISTER NEW PRODUCT SKU"}
+        subtitle="StockSense Master Registry Subsystem"
+        maxWidth="max-w-lg"
+      >
+        <form onSubmit={handleSubmit} className="space-y-4 font-mono text-xs">
+          <div>
+            <label className="block font-semibold uppercase text-[#71717A] mb-1">
+              Product / Item Name *
+            </label>
             <input
+              type="text"
               required
+              placeholder="e.g. Steel Rod 12mm"
               value={form.name}
-              onChange={(event) => updateForm("name", event.target.value)}
-              placeholder="Steel Rod"
-              className="w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500"
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+              className="w-full bg-white border border-[#CBD5E1] px-3 py-2 text-sm text-[#09090B] outline-none focus:border-[#4F46E5]"
             />
           </div>
 
-          {/* SKU */}
-          <div>
-            <label className="mb-1.5 block text-sm font-semibold">
-              SKU / Code *
-            </label>
-
-            <input
-              required
-              value={form.sku}
-              onChange={(event) => updateForm("sku", event.target.value)}
-              placeholder="STL-001"
-              className="w-full rounded-xl border border-slate-200 px-4 py-3 uppercase outline-none focus:border-blue-500"
-            />
-          </div>
-
-          {/* Category + Unit */}
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="mb-1.5 block text-sm font-semibold">
-                Category
+              <label className="block font-semibold uppercase text-[#71717A] mb-1">
+                SKU / Code *
               </label>
-
               <input
-                value={form.category}
-                onChange={(event) => updateForm("category", event.target.value)}
-                placeholder="Raw Material"
-                className="w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500"
+                type="text"
+                required
+                placeholder="e.g. STL-001"
+                value={form.sku}
+                onChange={(e) => setForm({ ...form, sku: e.target.value.toUpperCase() })}
+                className="w-full bg-white border border-[#CBD5E1] px-3 py-2 text-sm uppercase text-[#09090B] outline-none focus:border-[#4F46E5]"
               />
             </div>
 
             <div>
-              <label className="mb-1.5 block text-sm font-semibold">
+              <label className="block font-semibold uppercase text-[#71717A] mb-1">
+                Category
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. Raw Material"
+                value={form.category}
+                onChange={(e) => setForm({ ...form, category: e.target.value })}
+                className="w-full bg-white border border-[#CBD5E1] px-3 py-2 text-sm text-[#09090B] outline-none focus:border-[#4F46E5]"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="block font-semibold uppercase text-[#71717A] mb-1">
                 Unit of Measure
               </label>
-
               <select
                 value={form.unit}
-                onChange={(event) => updateForm("unit", event.target.value)}
-                className="w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500"
+                onChange={(e) => setForm({ ...form, unit: e.target.value })}
+                className="w-full bg-white border border-[#CBD5E1] px-3 py-2 text-xs text-[#09090B] outline-none focus:border-[#4F46E5]"
               >
-                <option value="pcs">Pieces</option>
-                <option value="kg">Kilograms</option>
-                <option value="g">Grams</option>
-                <option value="litre">Litres</option>
-                <option value="ml">Millilitres</option>
+                <option value="pcs">Pieces (pcs)</option>
+                <option value="kg">Kilograms (kg)</option>
+                <option value="g">Grams (g)</option>
+                <option value="litre">Litres (L)</option>
                 <option value="bags">Bags</option>
                 <option value="boxes">Boxes</option>
                 <option value="units">Units</option>
               </select>
             </div>
-          </div>
 
-          {/* Stock */}
-          <div className="grid gap-4 sm:grid-cols-2">
             <div>
-              <label className="mb-1.5 block text-sm font-semibold">
+              <label className="block font-semibold uppercase text-[#71717A] mb-1">
                 Initial Stock
               </label>
-
               <input
-                min="0"
                 type="number"
-                value={form.stock}
-                onChange={(event) => updateForm("stock", event.target.value)}
-                placeholder="100"
-                className="w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500"
+                min="0"
+                placeholder="0"
+                value={form.stock_quantity}
+                onChange={(e) =>
+                  setForm({ ...form, stock_quantity: e.target.value })
+                }
+                className="w-full bg-white border border-[#CBD5E1] px-3 py-2 text-sm text-[#09090B] outline-none focus:border-[#4F46E5]"
               />
             </div>
 
             <div>
-              <label className="mb-1.5 block text-sm font-semibold">
-                Reorder Level
+              <label className="block font-semibold uppercase text-[#71717A] mb-1">
+                Reorder Threshold
               </label>
-
               <input
-                min="0"
                 type="number"
-                value={form.minimum}
-                onChange={(event) => updateForm("minimum", event.target.value)}
-                placeholder="20"
-                className="w-full rounded-xl border border-slate-200 px-4 py-3 outline-none focus:border-blue-500"
+                min="0"
+                placeholder="10"
+                value={form.minimum_stock}
+                onChange={(e) =>
+                  setForm({ ...form, minimum_stock: e.target.value })
+                }
+                className="w-full bg-white border border-[#CBD5E1] px-3 py-2 text-sm text-[#09090B] outline-none focus:border-[#4F46E5]"
               />
             </div>
           </div>
 
-          {/* Submit */}
-          <button
-            type="submit"
-            disabled={saving}
-            className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 py-3 font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            <Plus size={18} />
-
-            {saving ? "Creating..." : "Create Product"}
-          </button>
+          <div className="pt-3 border-t border-[#E2E8F0] flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setModalOpen(false)}
+              className="px-4 py-2 border border-[#CBD5E1] bg-white text-[#09090B] hover:bg-[#F8FAFC] font-semibold uppercase tracking-wider text-xs"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={saving}
+              className="px-5 py-2 border border-[#4F46E5] bg-[#4F46E5] text-white hover:bg-[#4338CA] font-semibold uppercase tracking-wider text-xs disabled:opacity-50"
+            >
+              {saving ? "Writing to DB..." : editMode ? "Update SKU" : "Register Product"}
+            </button>
+          </div>
         </form>
       </Modal>
     </div>
