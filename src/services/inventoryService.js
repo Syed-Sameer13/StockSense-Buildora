@@ -1,4 +1,4 @@
-import { supabase } from "../lib/supabase";
+import { supabase } from "../lib/supabase.js";
 
 const STORAGE_KEYS = {
   RECEIPTS: "stocksense_receipts_v2",
